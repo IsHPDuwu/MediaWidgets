@@ -3,8 +3,36 @@
 import base64
 import json
 import sys
+import urllib.parse
 
 import lyrics_providers as lp
+import netease_lyrics as nl
+
+
+def test_netease_search_endpoint_and_response_shape():
+    calls = []
+    original_get_json = nl._get_json
+
+    def fake_get_json(url):
+        calls.append(url)
+        return {"result": {"songs": [{"id": 186016, "name": "晴天"}]}}
+
+    try:
+        nl._get_json = fake_get_json
+        songs = nl.search_songs("晴天 周杰伦", 3)
+        assert songs == [{"id": 186016, "name": "晴天"}]
+        parsed = urllib.parse.urlparse(calls[0])
+        params = urllib.parse.parse_qs(parsed.query)
+        assert parsed.path == "/api/search/get", parsed.path
+        assert params["s"] == ["晴天 周杰伦"]
+        assert params["limit"] == ["3"]
+
+        # 旧 `/web` 接口目前会返回加密字符串；异常结构不能导致渠道崩溃。
+        nl._get_json = lambda _url: {"result": "encrypted payload"}
+        assert nl.search_songs("晴天", 3) == []
+    finally:
+        nl._get_json = original_get_json
+    print("PASS netease search endpoint and response shape")
 
 
 def test_parse_qrc():
@@ -109,6 +137,7 @@ def test_netease_provider_parse():
 
 
 if __name__ == "__main__":
+    test_netease_search_endpoint_and_response_shape()
     test_parse_qrc()
     test_parse_krc()
     test_apply_lrc_translation()
