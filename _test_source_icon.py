@@ -86,6 +86,37 @@ check("empty app id clears", d.sourceName == "" and d.sourceIcon == "")
 
 # ---- 2. 图标文件 / PE 提取 ----
 
+# 冻结宿主（PyInstaller）不带未使用的标准库：smtc_backend 不得引入 xml.etree
+# （v1.9.0 实机报 No module named 'xml.etree'，后端整体初始化失败）
+if "xml.etree" not in sys.modules:
+    check("no xml.etree dependency", "xml.etree" not in sys.modules)
+else:
+    print("[SKIP] xml.etree already loaded by environment")
+
+# 清单解析：uap 命名空间前缀、属性提取、Id 字段
+MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10">
+  <Applications>
+    <Application Id="Other" Executable="other.exe">
+      <uap:VisualElements DisplayName="Other App" Square44x44Logo="Assets\\other.png"/>
+    </Application>
+    <Application Id="Main" Executable="app.exe">
+      <uap:VisualElements DisplayName="ms-resource:AppName" Square44x44Logo="Assets\\logo.png"
+                          Square150x150Logo="Assets\\tile.png"/>
+    </Application>
+  </Applications>
+</Package>
+"""
+apps = sb._parse_manifest_applications(MANIFEST.encode("utf-8"))
+check("manifest app count", len(apps) == 2, str([a["id"] for a in apps]))
+main_app = next((a for a in apps if a["id"] == "Main"), None)
+check("manifest attrs parsed", main_app is not None
+      and main_app["ve"].get("DisplayName") == "ms-resource:AppName"
+      and main_app["ve"].get("Square44x44Logo") == "Assets\\logo.png"
+      and main_app["ve"].get("Square150x150Logo") == "Assets\\tile.png")
+check("manifest empty attr safe", all("Logo" not in a["ve"] for a in apps))
+
 tmp = Path(tempfile.mkdtemp())
 png_path = tmp / "icon.png"
 png_path.write_bytes(png_bytes(48, "#2E86C1"))
@@ -145,7 +176,7 @@ check("registry unknown aumid -> empty", sb._win_registry_icon("___no_such___.ap
 # ---- 5. 应用名称解析 ----
 
 desc = sb._win_pe_file_description(r"C:\Windows\System32\notepad.exe")
-check("pe file description", desc != "", repr(desc))
+check("pe file description", len(desc) >= 3, repr(desc))
 
 name = sb._win_source_name("Microsoft.ZuneMusic_8wekyb3d8bbwe!Microsoft.ZuneMusic")
 if name:

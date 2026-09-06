@@ -16,10 +16,9 @@ import ctypes.wintypes as wt
 import os
 import threading
 import winreg
-import xml.etree.ElementTree as ET
 
 from loguru import logger
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QXmlStreamReader, QUrl
 from PySide6.QtGui import QImage
 
 from media_backend import MediaBackend
@@ -31,11 +30,7 @@ _PKG_REPO = (r"SOFTWARE\Classes\Local Settings\Software\Microsoft\Windows"
 
 # ---- 播放源图标解析（Windows）----
 # 解析链：AUMID 注册表 IconUri → 打包应用清单 logo → 进程 exe 内嵌图标。
-# 只用 ctypes / winreg / QImage（纯光栅），不触碰 QApplication，可在 SMTC 工作线程调用。
-
-
-def _local_tag(el):
-    return el.tag.rsplit("}", 1)[-1]
+# 只用 ctypes / winreg / Qt（纯光栅），不触碰 QApplication，可在 SMTC 工作线程调用。
 
 
 def _icon_data_url(img):
@@ -198,24 +193,46 @@ def _win_pick_logo_variant(directory, stem, ext):
     return os.path.join(directory, ranked[0][1])
 
 
-def _win_manifest_logo(pkg_path, root_el, entry_id):
+def _parse_manifest_applications(xml_bytes):
+    """AppxManifest → [{id, ve}]（Application 列表，ve 为其 VisualElements 属性）。
+
+    用 Qt 流式解析器而非标准库 xml：宿主以 PyInstaller 冻结发行，未用到的
+    标准库模块不会打进包里（v1.9.0 实机报 No module named 'xml.etree'）。
+    """
+    reader = QXmlStreamReader(xml_bytes.decode("utf-8", "replace"))
+    apps = []
+    current = None
+    while not reader.atEnd() and not reader.hasError():
+        if reader.isStartElement():
+            name = str(reader.name())
+            if name == "Application":
+                current = {"id": str(reader.attributes().value("Id") or ""), "ve": {}}
+                apps.append(current)
+            elif name == "VisualElements" and current is not None:
+                for attr in ("DisplayName", "Square44x44Logo", "Square150x150Logo", "Logo"):
+                    value = reader.attributes().value(attr)
+                    if value:
+                        current["ve"][attr] = str(value)
+        elif reader.isEndElement() and str(reader.name()) == "Application":
+            current = None
+        reader.readNext()
+    return apps
+
+
+def _win_manifest_logo(pkg_path, apps, entry_id):
     """AppxManifest 里目标 Application 的 logo 绝对路径；Id 对不上时取第一个带 logo 的。"""
-    apps = [el for el in root_el.iter() if _local_tag(el) == "Application"]
     # 精确匹配排最前（稳定排序），兜底其余应用
-    apps.sort(key=lambda el: el.get("Id") != entry_id)
-    for app_el in apps:
-        for ve in app_el.iter():
-            if _local_tag(ve) != "VisualElements":
+    ordered = sorted(apps, key=lambda app: app["id"] != entry_id)
+    for app in ordered:
+        for attr in ("Square44x44Logo", "Square150x150Logo", "Logo"):
+            rel = app["ve"].get(attr)
+            if not rel:
                 continue
-            for attr in ("Square44x44Logo", "Square150x150Logo", "Logo"):
-                rel = ve.get(attr)
-                if not rel:
-                    continue
-                p = os.path.join(pkg_path, os.path.normpath(rel))
-                stem, ext = os.path.splitext(p)
-                chosen = _win_pick_logo_variant(os.path.dirname(p), os.path.basename(stem), ext)
-                if chosen:
-                    return chosen
+            p = os.path.join(pkg_path, os.path.normpath(rel))
+            stem, ext = os.path.splitext(p)
+            chosen = _win_pick_logo_variant(os.path.dirname(p), os.path.basename(stem), ext)
+            if chosen:
+                return chosen
     return ""
 
 
@@ -233,10 +250,11 @@ def _win_packaged_icon(entries):
     family, entry_id, candidates = entries
     for full, pkg_path in candidates:
         try:
-            root_el = ET.parse(os.path.join(pkg_path, "AppxManifest.xml")).getroot()
-        except (OSError, ET.ParseError):
+            with open(os.path.join(pkg_path, "AppxManifest.xml"), "rb") as f:
+                apps = _parse_manifest_applications(f.read())
+        except OSError:
             continue
-        logo = _win_manifest_logo(pkg_path, root_el, entry_id)
+        logo = _win_manifest_logo(pkg_path, apps, entry_id)
         if logo:
             stem, index = _split_icon_index(logo)
             url = _win_icon_data_url_from_file(stem, index)
@@ -250,28 +268,25 @@ def _win_packaged_display_name(entries):
     family, entry_id, candidates = entries
     for full, pkg_path in candidates:
         try:
-            root_el = ET.parse(os.path.join(pkg_path, "AppxManifest.xml")).getroot()
-        except (OSError, ET.ParseError):
+            with open(os.path.join(pkg_path, "AppxManifest.xml"), "rb") as f:
+                apps = _parse_manifest_applications(f.read())
+        except OSError:
             continue
-        apps = [el for el in root_el.iter() if _local_tag(el) == "Application"]
         # 精确匹配排最前（稳定排序）；其清单名解析不了时再试其余应用
-        apps.sort(key=lambda el: el.get("Id") != entry_id)
-        for app_el in apps:
-            for ve in app_el.iter():
-                if _local_tag(ve) != "VisualElements":
-                    continue
-                display = ve.get("DisplayName")
-                if not display:
-                    continue
-                if not display.startswith("ms-resource:"):
-                    return display
-                if "://" in display:
-                    uri = display
-                else:
-                    uri = f"ms-resource://{family}/resources/{display.split(':', 1)[1]}"
-                resolved = _win_resolve_indirect(f"@{{{full}?{uri}}}")
-                if resolved and not resolved.startswith("@{"):
-                    return resolved
+        ordered = sorted(apps, key=lambda app: app["id"] != entry_id)
+        for app in ordered:
+            display = app["ve"].get("DisplayName")
+            if not display:
+                continue
+            if not display.startswith("ms-resource:"):
+                return display
+            if "://" in display:
+                uri = display
+            else:
+                uri = f"ms-resource://{family}/resources/{display.split(':', 1)[1]}"
+            resolved = _win_resolve_indirect(f"@{{{full}?{uri}}}")
+            if resolved and not resolved.startswith("@{"):
+                return resolved
     return ""
 
 
@@ -430,7 +445,8 @@ def _win_pe_file_description(path):
             blen = wt.UINT()
             sub = f"\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileDescription"
             if ver.VerQueryValueW(data, sub, ctypes.byref(buf), ctypes.byref(blen)) and blen.value:
-                text = ctypes.wstring_at(buf, blen.value // 2 - 1)
+                # puLen 为字符数（含结尾空字符），非字节数
+                text = ctypes.wstring_at(buf, blen.value - 1)
                 if text.strip():
                     return text.strip()
     except Exception:
