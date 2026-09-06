@@ -46,9 +46,14 @@ FluentPage {
         rightPadding: 16
         topPadding: 16
         bottomPadding: 16
+        // 卡内有两个子项（内容列 + 右上角覆盖行），Pane 无法自动推算隐式大小，
+        // 按官方文档显式绑定内容高度，否则 Frame 塌缩成一条、内容被 clip 裁掉
+        contentHeight: mediaColumn.implicitHeight
 
         ColumnLayout {
-            anchors.fill: parent
+            id: mediaColumn
+            anchors.left: parent.left
+            anchors.right: parent.right
             spacing: 12
 
             RowLayout {
