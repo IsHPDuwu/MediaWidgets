@@ -83,6 +83,32 @@ FluentPage {
                         color: Colors.proxy.textSecondaryColor
                         visible: artImage.status !== Image.Ready
                     }
+
+                    // 播放源图标角标预览：与桌面媒体组件同款样式
+                    Rectangle {
+                        width: 18
+                        height: 18
+                        radius: 9
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.rightMargin: -3
+                        anchors.bottomMargin: -3
+                        visible: root.config("show_source_badge", false)
+                                 && root.hasMedia && root.backend.sourceIcon !== ""
+                        color: Theme.isDark() ? "#2B2B2B" : "#FFFFFF"
+                        border.width: 1
+                        border.color: Theme.isDark() ? Qt.alpha("#FFFFFF", 0.18) : Qt.alpha("#000000", 0.12)
+
+                        Image {
+                            anchors.fill: parent
+                            anchors.margins: 4
+                            source: root.hasMedia ? root.backend.sourceIcon : ""
+                            fillMode: Image.PreserveAspectFit
+                            asynchronous: true
+                            smooth: true
+                            mipmap: true
+                        }
+                    }
                 }
 
                 ColumnLayout {
@@ -156,6 +182,66 @@ FluentPage {
                     visible: root.hasMedia
                 }
             }
+        }
+
+        // 播放源：应用名 + 图标（卡片右上角，与播放/暂停图标错开高度）
+        RowLayout {
+            anchors.top: parent.top
+            anchors.right: parent.right
+            anchors.topMargin: 2
+            anchors.rightMargin: 2
+            spacing: 6
+            visible: root.hasMedia && root.backend
+                     && (root.backend.sourceName !== "" || root.backend.sourceIcon !== "")
+
+            Text {
+                Layout.maximumWidth: 168
+                text: root.hasMedia && root.backend ? root.backend.sourceName : ""
+                typography: Typography.Caption
+                color: Colors.proxy.textSecondaryColor
+                elide: Text.ElideRight
+                wrapMode: Text.NoWrap
+                visible: text !== ""
+            }
+
+            Item {
+                Layout.preferredWidth: 16
+                Layout.preferredHeight: 16
+                visible: root.hasMedia && root.backend && root.backend.sourceIcon !== ""
+
+                Image {
+                    anchors.fill: parent
+                    anchors.margins: 1
+                    source: root.hasMedia ? root.backend.sourceIcon : ""
+                    fillMode: Image.PreserveAspectFit
+                    asynchronous: true
+                    smooth: true
+                    mipmap: true
+                }
+            }
+        }
+    }
+
+    // ---------- 媒体 ----------
+
+    Text {
+        Layout.fillWidth: true
+        Layout.topMargin: 20
+        typography: Typography.BodyStrong
+        text: qsTr("媒体")
+    }
+
+    // 媒体组件封面右下角的播放源应用图标角标
+    SettingCard {
+        Layout.fillWidth: true
+        Layout.topMargin: 4
+        icon.name: "ic_fluent_apps_20_regular"
+        title: qsTr("显示播放源图标")
+        description: qsTr("在媒体组件的专辑封面右下角叠加显示正在播放的应用图标")
+
+        Switch {
+            checked: root.config("show_source_badge", false)
+            onToggled: Configs.setPlugin(root.pluginId, "show_source_badge", checked)
         }
     }
 

@@ -44,6 +44,8 @@ class MediaBackend(QObject):
     playingChanged = Signal()
     accentColorChanged = Signal()
     accentColor2Changed = Signal()
+    sourceNameChanged = Signal()
+    sourceIconChanged = Signal()
 
     # 换歌信号（title, artist）：供歌词推送等模块按歌曲触发
     songChanged = Signal(str, str)
@@ -53,6 +55,7 @@ class MediaBackend(QObject):
     _mediaUpdated = Signal(str, str, str, int, int, str, str)
     _timelineUpdated = Signal(int, int)      # position_ms, duration_ms
     _playbackUpdated = Signal(int, float)    # status, rate
+    _sourceUpdated = Signal(str, str)        # 播放源名称/图标 data URL（解析线程 → 主线程）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -74,10 +77,16 @@ class MediaBackend(QObject):
         self._last_art_hash = None
         self._last_art_url = ""
         self._last_palette = ("#9AA0A6", "#9AA0A6")
+        # 播放源名称与图标：app_id → (name, data URL) 缓存，_source_app_id 去重避免每次 fetch 重解析
+        self._source_name = ""
+        self._source_icon = ""
+        self._source_app_id = None
+        self._source_cache = {}
 
         self._mediaUpdated.connect(self._apply_update)
         self._timelineUpdated.connect(self._apply_timeline)
         self._playbackUpdated.connect(self._apply_playback)
+        self._sourceUpdated.connect(self._apply_source)
 
     # ---- Qt 属性 ----
 
@@ -123,6 +132,16 @@ class MediaBackend(QObject):
     def accentColor2(self):
         """从专辑图提取的第二主色（hex 字符串），用于渐变另一端。"""
         return self._accent_color2
+
+    @Property(str, notify=sourceNameChanged)
+    def sourceName(self):
+        """播放源应用名称（取不到时为空字符串）。"""
+        return self._source_name
+
+    @Property(str, notify=sourceIconChanged)
+    def sourceIcon(self):
+        """播放源应用图标（PNG data URL，取不到时为空字符串）。"""
+        return self._source_icon
 
     @staticmethod
     def _format_time(ms):
@@ -231,6 +250,65 @@ class MediaBackend(QObject):
         if was_playing != self._playing:
             self.playingChanged.emit()
         self._emit_progress()
+
+    # ---- 播放源名称与图标 ----
+
+    def set_source_app_id(self, app_id):
+        """更新播放源应用标识（数据源线程 / 主线程均可调用）。
+
+        app_id 形如 Windows 的 AUMID、Linux 的 MPRIS DesktopEntry（或总线名后缀）；
+        解析由子类 _resolve_source 实现，返回 (应用名, 图标 data URL)，
+        结果按 app_id 缓存后经信号在主线程应用。空串表示当前无会话，清空二者。
+        """
+        app_id = app_id or ""
+        if app_id == self._source_app_id:
+            return
+        self._source_app_id = app_id
+        if not app_id:
+            self._sourceUpdated.emit("", "")
+            return
+        cached = self._source_cache.get(app_id)
+        if cached is None:
+            try:
+                cached = self._resolve_source(app_id)
+            except Exception as e:
+                logger.debug(f"MediaBackend: resolve source failed for {app_id}: {e}")
+                cached = ("", "")
+            if len(self._source_cache) > 64:
+                self._source_cache.clear()
+            self._source_cache[app_id] = cached
+        self._sourceUpdated.emit(*cached)
+
+    def _resolve_source(self, app_id):
+        """由 app_id 解析播放源，返回 (应用名, 图标 data URL)。子类按平台实现。"""
+        return "", ""
+
+    def _apply_source(self, name, icon):
+        name = name or ""
+        icon = icon or ""
+        if name != self._source_name:
+            self._source_name = name
+            self.sourceNameChanged.emit()
+        if icon != self._source_icon:
+            self._source_icon = icon
+            self.sourceIconChanged.emit()
+
+    @staticmethod
+    def _icon_data_url(img):
+        """图标位图规范为 ≤64px 的 PNG data URL（空图返回空串）。"""
+        if img is None or img.isNull():
+            return ""
+        if img.width() > 64 or img.height() > 64:
+            img = img.scaled(
+                64, 64,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        buf = QBuffer()
+        buf.open(QIODevice.OpenModeFlag.WriteOnly)
+        if not img.save(buf, "PNG"):
+            return ""
+        return "data:image/png;base64," + base64.b64encode(bytes(buf.data())).decode("ascii")
 
     # ---- 专辑图处理 ----
 

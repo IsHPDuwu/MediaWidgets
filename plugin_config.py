@@ -14,6 +14,8 @@ from ClassWidgets.SDK import ConfigBaseModel
 
 
 class MediaWidgetsConfig(ConfigBaseModel):
+    # 媒体组件专辑封面右下角的播放源应用图标角标开关
+    show_source_badge: bool = False
     # 歌词源：auto / qqmusic / kugou / netease（改源后对当前歌曲立即重抓）
     lyric_source: str = "auto"
     # 歌词翻译（如有）显示开关：开启时歌词组件原文下方显示译文，

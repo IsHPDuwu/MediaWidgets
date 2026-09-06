@@ -12,6 +12,7 @@ MPRIS Backend（Linux）
 """
 
 import base64
+import os
 import threading
 import time
 
@@ -23,9 +24,11 @@ from PySide6.QtDBus import (
     QDBusInterface,
     QDBusVariant,
 )
+from PySide6.QtGui import QIcon, QImage
 
 from media_backend import MediaBackend, _STATUS_PLAYING
 
+_IFACE_ROOT = "org.mpris.MediaPlayer2"
 _IFACE_PLAYER = "org.mpris.MediaPlayer2.Player"
 _IFACE_PROPERTIES = "org.freedesktop.DBus.Properties"
 _PATH = "/org/mpris/MediaPlayer2"
@@ -44,6 +47,7 @@ class MprisBackend(MediaBackend):
         self._started = False
         self._players = {}        # service -> 最近活动时间戳（monotonic）
         self._ifaces = {}         # service -> QDBusInterface（Player 接口）
+        self._root_ifaces = {}    # service -> QDBusInterface（根接口，读 DesktopEntry）
         self._active = None
         self._session = None
         self._session_service = None
@@ -102,6 +106,7 @@ class MprisBackend(MediaBackend):
             return
         self._players[service] = time.monotonic()
         self._ifaces[service] = QDBusInterface(service, _PATH, _IFACE_PLAYER, self._bus)
+        self._root_ifaces[service] = QDBusInterface(service, _PATH, _IFACE_ROOT, self._bus)
         try:
             self._bus.connect(
                 service, _PATH, _IFACE_PROPERTIES, "PropertiesChanged",
@@ -135,6 +140,7 @@ class MprisBackend(MediaBackend):
         else:
             self._players.pop(service, None)
             self._ifaces.pop(service, None)
+            self._root_ifaces.pop(service, None)
             if self._active == service:
                 self._active = None
                 self._session = None
@@ -164,6 +170,7 @@ class MprisBackend(MediaBackend):
     def _refresh(self):
         self._refresh_active()
         if self._active is None:
+            self.set_source_app_id("")
             self._apply_update("", "", "", 0, 0, *self._last_palette)
             self._apply_playback(0, 1.0)
             self._apply_timeline(0, 0)
@@ -174,6 +181,7 @@ class MprisBackend(MediaBackend):
             self._session_service = svc
         if self._session is None:
             return
+        self.set_source_app_id(self._current_source_app_id())
         status = self._read_status()
         rate = self._read_rate()
         meta = self._read_metadata()
@@ -241,6 +249,80 @@ class MprisBackend(MediaBackend):
         if isinstance(v, (list, tuple)):
             return [MprisBackend._unwrap(x) for x in v]
         return v
+
+    # ---- 播放源图标 ----
+
+    def _current_source_app_id(self):
+        """播放源标识：根接口 DesktopEntry 优先，总线名后缀兜底。"""
+        root = self._root_ifaces.get(self._active)
+        if root is not None:
+            try:
+                entry = self._unwrap(root.property("DesktopEntry"))
+            except Exception:
+                entry = None
+            if isinstance(entry, str) and entry:
+                return entry
+        # org.mpris.MediaPlayer2.spotify[.instanceXXX] → spotify
+        suffix = self._active.rsplit("MediaPlayer2.", 1)[-1] if self._active else ""
+        return suffix or ""
+
+    def _resolve_source(self, app_id):
+        """DesktopEntry/总线名 → (应用名, 图标 data URL)，主线程调用。"""
+        return self._source_identity(app_id), self._resolve_source_icon(app_id)
+
+    def _source_identity(self, app_id):
+        """播放器显示名：根接口 Identity 优先，DesktopEntry/总线名后缀兜底。"""
+        root = self._root_ifaces.get(self._active)
+        if root is not None:
+            try:
+                ident = self._unwrap(root.property("Identity"))
+            except Exception:
+                ident = None
+            if isinstance(ident, str) and ident:
+                return ident
+        return app_id
+
+    def _resolve_source_icon(self, app_id):
+        """DesktopEntry / 总线名 → .desktop Icon= → 主题图标 → PNG data URL。"""
+        names = [app_id]
+        icon = self._desktop_icon_entry(app_id)
+        if icon:
+            if icon.startswith("/"):
+                return self._icon_data_url(QImage(icon))
+            names.insert(0, icon)
+        if "." in app_id:  # org.xxx.Player：主题里通常按末段注册
+            names.append(app_id.rsplit(".", 1)[-1])
+        for name in dict.fromkeys(names):
+            if not name:
+                continue
+            theme_icon = QIcon.fromTheme(name)
+            if theme_icon.isNull():
+                continue
+            pm = theme_icon.pixmap(64, 64)
+            if pm.isNull():
+                continue
+            return self._icon_data_url(pm.toImage())
+        return ""
+
+    @staticmethod
+    def _desktop_icon_entry(entry):
+        """读 .desktop 的 Icon= 值；绝对路径直接加载，相对名交主题查找。"""
+        dirs = (
+            "/usr/share/applications",
+            os.path.expanduser("~/.local/share/applications"),
+            "/var/lib/flatpak/exports/share/applications",
+            os.path.expanduser("~/.local/share/flatpak/exports/share/applications"),
+        )
+        for d in dirs:
+            try:
+                with open(os.path.join(d, entry + ".desktop"),
+                          encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        if line.startswith("Icon="):
+                            return line[5:].strip()
+            except OSError:
+                continue
+        return ""
 
     # ---- 元数据应用 ----
 

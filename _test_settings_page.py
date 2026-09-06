@@ -29,6 +29,8 @@ class StubBackend(QObject):
     progressChanged = Signal()
     playingChanged = Signal()
     accentColorChanged = Signal()
+    sourceNameChanged = Signal()
+    sourceIconChanged = Signal()
 
     @Property(str, notify=titleChanged)
     def title(self):
@@ -62,6 +64,14 @@ class StubBackend(QObject):
     def isPlaying(self):
         return True
 
+    @Property(str, notify=sourceNameChanged)
+    def sourceName(self):
+        return "NetEase Cloud Music"
+
+    @Property(str, notify=sourceIconChanged)
+    def sourceIcon(self):
+        return ""
+
 
 class StubConfigs(QObject):
     configChanged = Signal()
@@ -75,6 +85,7 @@ class StubConfigs(QObject):
                     "com.seiraiharaguchi.mediawidgets": {
                         "lyrics_enabled": True,
                         "show_translation": False,
+                        "show_source_badge": False,
                     }
                 }
             }
@@ -150,6 +161,7 @@ def main():
         "ic_fluent_play_20_regular",
         "ic_fluent_alert_on_20_regular",
         "ic_fluent_translate_20_regular",
+        "ic_fluent_apps_20_regular",
     ]
     index_js = (
         RINUI_QML_DIR / "RinUI" / "assets" / "fonts" / "FluentSystemIcons-Index.js"

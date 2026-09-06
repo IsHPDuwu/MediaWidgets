@@ -14,6 +14,14 @@ Widget {
         return a ? a : qsTr("Playing")
     }
 
+    // 「显示播放源图标」偏好（插件设置页写入；Configs.data 变更通知驱动本绑定刷新）
+    readonly property bool sourceBadgeEnabled: {
+        var plugins = Configs.data && Configs.data.plugins ? Configs.data.plugins : null
+        var section = plugins && plugins.configs
+                      ? plugins.configs["com.seiraiharaguchi.mediawidgets"] : null
+        return !!section && section.show_source_badge === true
+    }
+
     // 背景层（自底向上）：时间水印 → 专辑图双主色渐变 → 播放进度遮罩
     // 圆角跟随框架 cornerRadius（widget_corner_radius 偏好），契合各主题
     backgroundArea: Item {
@@ -108,6 +116,33 @@ Widget {
                     text: qsTr("\u266A")
                     opacity: 0.6
                     font.pixelSize: miniMode ? 12 : 16
+                }
+            }
+
+            // 播放源图标角标：开关打开且后端取到应用图标时，叠在封面右下角
+            Rectangle {
+                objectName: "sourceBadge"
+                width: miniMode ? 11 : 15
+                height: width
+                radius: height / 2
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.rightMargin: miniMode ? -2 : -3
+                anchors.bottomMargin: miniMode ? -2 : -3
+                visible: root.sourceBadgeEnabled
+                         && backend && backend.title !== "" && backend.sourceIcon !== ""
+                color: Theme.isDark() ? "#2B2B2B" : "#FFFFFF"
+                border.width: 1
+                border.color: Theme.isDark() ? Qt.alpha("#FFFFFF", 0.18) : Qt.alpha("#000000", 0.12)
+
+                Image {
+                    anchors.fill: parent
+                    anchors.margins: Math.round(parent.width * 0.2)
+                    source: backend ? backend.sourceIcon : ""
+                    fillMode: Image.PreserveAspectFit
+                    asynchronous: true
+                    smooth: true
+                    mipmap: true
                 }
             }
         }
